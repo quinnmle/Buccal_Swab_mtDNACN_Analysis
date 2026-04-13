@@ -1,0 +1,317 @@
+---
+title: "Buccal Swab Project qPCR Analysis"
+author: "Quinn Le"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list = ls())
+
+setwd('/Users/quinnmle/Documents/Castellani Lab/Buccal_2025-12-12/Buccal Swab')
+```
+
+# Load Packages
+```{r, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(magrittr)
+library(readxl)
+library(data.table)
+library(dplyr)
+library(raster)
+library(cowplot)
+```
+
+# Loading in data
+```{r}
+dlp <- read.csv("dlp_buccal.csv")
+alb <- read.csv("alb_buccal.csv")
+
+removed_samples = as.data.frame(matrix(nrow = 1, ncol = 3))
+colnames(removed_samples) = c('Sample', 'Well', 'Reason')
+dlp$Dlp_CT = dlp$Cq
+alb$Alb_CT = alb$Cq
+df = merge(dlp, alb, by = c('Well', 'Sample'))
+df$Dlp_CT <- as.numeric(as.character(df$Dlp_CT))
+df$Alb_CT <- as.numeric(as.character(df$Alb_CT))
+```
+
+# Check water samples
+```{r}
+subset(df, Sample == "Water")$Alb_CT
+subset(df, Sample == "Water")$Dlp_CT
+
+df
+
+# plot_grid(
+#   subset(df, Sample == "H") %>%
+#     ggplot(., aes(y = as.numeric(Alb_CT), x = Sample)) + geom_boxplot() + geom_point() + ylab("CT_ALB"),
+#   subset(df, Sample == "Water") %>%
+#     ggplot(., aes(y = as.numeric(Dlp_CT), x = Sample)) + geom_boxplot() + geom_point() + ylab("CT_DLP"),
+#   nrow = 1, ncol = 2)
+
+```
+
+
+# Calculating Delta Ct
+```{r}
+df$deltaCT = df$Alb_CT - df$Dlp_CT
+
+plot_grid(ggplot(df, aes(x = Alb_CT %>% as.numeric())) + 
+            geom_density(alpha = 0.5) + xlab('ALB CT') + ylab('Density') + 
+            geom_rug() + theme_bw(),
+          ggplot(df, aes(x = Dlp_CT %>% as.numeric())) + 
+            geom_density(alpha = 0.5) + xlab('DLP CT') + ylab('Density') + 
+            geom_rug() + theme_bw(),
+          ggplot(df, aes(x = deltaCT %>% as.numeric())) + 
+            geom_density(alpha = 0.5) + xlab('Delta CT') + ylab('Density') + 
+            geom_rug() + theme_bw(),
+          nrow = 1, ncol = 3)
+
+# plot_grid(ggplot(merged_df, aes(x = Alb_CT %>% as.numeric())) + 
+#             geom_density(alpha = 0.5) + xlab('ALB CT') + ylab('Density') + 
+#             geom_rug() + theme_bw(),
+#           ggplot(merged_df, aes(x = Dlp_CT %>% as.numeric())) + 
+#             geom_density(alpha = 0.5) + xlab('DLP CT') + ylab('Density') + 
+#             geom_rug() + theme_bw(),
+#           ggplot(merged_df, aes(x = deltaCT %>% as.numeric())) + 
+#             geom_density(alpha = 0.5) + xlab('Delta CT') + ylab('Density') + 
+#             geom_rug() + theme_bw(),
+#           nrow = 1, ncol = 3)
+
+```
+
+# QC
+```{r}
+data_for_filtering <- df
+print("n to move forward for filtering, including controls:")
+nrow(data_for_filtering)
+print("n to move forward for filtering, no controls:")
+subset(data_for_filtering, Sample != "Water") %>% nrow()
+data_for_filtering <- subset(data_for_filtering, Sample != "Water")
+
+```
+
+## Samples with NA DLP CT or ALB CT
+```{r}
+DLP_ALB_CT_NA_sample <- subset(data_for_filtering, is.na(Dlp_CT) | is.na(Alb_CT))
+print("n samples with NA DLP_CT or ALB_CT")
+nrow(DLP_ALB_CT_NA_sample)
+```
+
+## Samples with DLP CT greater than 26
+```{r}
+DLP_over26_sample <- subset(data_for_filtering, Dlp_CT > 26)
+print("n samples with DLP_CT > 26")
+nrow(DLP_over26_sample)
+```
+
+## Samples with ALB CT more than 3 SD in any direction
+```{r}
+highALB <- mean(data_for_filtering$Alb_CT) + (3* (sd(data_for_filtering$Alb_CT)))
+lowALB <- mean(data_for_filtering$Alb_CT) - (3* (sd(data_for_filtering$Alb_CT)))
+
+highALB_sample <- subset(data_for_filtering, Alb_CT > highALB)
+print("highALB samples")
+nrow(highALB_sample)
+
+lowALB_sample <- subset(data_for_filtering, Alb_CT < lowALB)
+print("lowALB samples")
+nrow(lowALB_sample)
+
+lowALB_sample$qc_assessment <- c('ALB CT < 3 SD from the mean')
+#highALB_sample$qc_assessment <- c('ALB CT > 3 SD from the mean')
+```
+
+## Samples with deltaCT more than 3 SD in any direction
+```{r}
+highDCT <- mean(data_for_filtering$deltaCT) + (3*(sd(data_for_filtering$deltaCT)))
+lowDCT <- mean(data_for_filtering$deltaCT) - (3*(sd(data_for_filtering$deltaCT)))
+
+highDCT_sample <- subset(data_for_filtering, deltaCT > highDCT)
+print("high deltaCT samples")
+nrow(highDCT_sample)
+
+lowDCT_sample <- subset(data_for_filtering, deltaCT < lowDCT)
+print("low deltaCT samples")
+nrow(lowDCT_sample)
+
+lowDCT_sample$qc_assessment <- c('deltaCT < 3 SD from the mean')
+highDCT_sample$qc_assessment <- c('deltaCT > 3 SD from the mean')
+```
+
+## Removing samples
+```{r}
+data_for_filtering <- subset(data_for_filtering, Dlp_CT <= 26)
+print("n samples after removing >26 DLP CT")
+subset(data_for_filtering, Dlp_CT <= 26) %>% nrow()
+after_df <- subset(data_for_filtering, Dlp_CT <= 26)
+
+data_for_filtering <- subset(data_for_filtering, Alb_CT > lowALB & Alb_CT < highALB)
+print("n samples after removing extreme ALB")
+subset(data_for_filtering, Alb_CT > lowALB & Alb_CT < highALB) %>% nrow()
+after_df <- subset(after_df, Alb_CT > lowALB & Alb_CT < highALB)
+
+data_for_filtering <- subset(data_for_filtering, deltaCT > lowDCT & deltaCT < highDCT)
+print("n samples after removing extreme delta CT")
+subset(data_for_filtering, deltaCT > lowDCT & deltaCT < highDCT) %>% nrow()
+after_df <- subset(after_df, deltaCT > lowDCT & deltaCT < highDCT)
+```
+
+## Replot after QC
+```{r}
+plot_grid(ggplot(after_df, aes(x = Alb_CT %>% as.numeric())) + 
+            geom_density(alpha = 0.5) + xlab('ALB CT') + ylab('Density') + 
+            geom_rug() + theme_bw(),
+          ggplot(after_df, aes(x = Dlp_CT %>% as.numeric())) + 
+            geom_density(alpha = 0.5) + xlab('DLP CT') + ylab('Density') + 
+            geom_rug() + theme_bw(),
+          ggplot(after_df, aes(x = deltaCT %>% as.numeric())) + 
+            geom_density(alpha = 0.5) + xlab('Delta CT') + ylab('Density') + 
+            geom_rug() + theme_bw(),
+          nrow = 1, ncol = 3)
+```
+
+## Summary of low quality samples to be removed
+```{r}
+print("Samples with ALB CT > 3 SD in any direction")
+lowALB_sample$Sample 
+highALB_sample$Sample
+
+print("Samples with DLP CT > 26")
+DLP_over26_sample$Sample
+
+print("Samples with delta CT > 3 SD in any direction")
+lowDCT_sample$Sample
+highDCT_sample$Sample
+```
+# Loading in age and sex data
+```{r}
+anno_df <- read.csv("Quinn_Limo_SampleIDs.csv")
+colnames(anno_df) <- c("Sample", "Limo.ID", "Sex", "Age")
+anno_df$Sex <- as.factor(anno_df$Sex)
+anno_df$Sample <- as.character(anno_df$Sample)
+merged_df <- left_join(after_df, anno_df, by = "Sample")
+
+
+png("buccal_AgeSexPlots_20251212.png")
+p_age <- ggplot(merged_df, aes(x = Age)) +
+  geom_density(na.rm = TRUE) +
+  geom_rug(sides = "b", alpha = 0.4, na.rm = TRUE) +
+  geom_vline(aes(xintercept = mean(Age, na.rm = TRUE)),
+             linetype = "dashed") +
+  labs(x = "Age", y = "Density") +
+  theme_classic()
+
+p_sex <- ggplot(merged_df, aes(x = factor(Sex))) +
+  geom_bar(na.rm = TRUE) +
+  labs(x = "Sex", y = "Count") +
+  theme_classic()
+
+plot_grid(p_age, p_sex, nrow = 1)
+
+anno_df$Age
+```
+
+# Adjusting for age and sex
+```{r}
+merged_df$Sex <- as.factor(merged_df$Sex)
+fit <- lm(deltaCT ~ Age + Sex, data = merged_df)
+summary(fit)
+res <- resid(fit)
+merged_df$deltaCT_adj <- scale(res)
+sd(merged_df$deltaCT_adj)
+mean(merged_df$deltaCT_adj)
+head(merged_df$deltaCT_adj)
+
+# mitochondrialdnacop adjusted
+```
+
+# Generating reports
+```{r}
+# _minimal: only sample name and CT values
+# _CLEAN: removal of samples that failed QC
+
+write.csv(df, "Buccal_qPCR_Results_20251212.csv", quote=F)
+write.csv(merged_df, "Buccal_qPCR_Results_20251212_CLEAN.csv", quote=F)
+
+## Edit
+merged_df$Castellani.ID <- merged_df$Sample
+merged_df$mtDNACN_adj_age_sex <- merged_df$deltaCT_adj
+merged_df$mtDNACN_unadj <- scale(merged_df$deltaCT)
+sd(merged_df$deltaCT_standardized)
+
+## Edit/
+
+df2 <- df[,c("Sample", "deltaCT", "Alb_CT","Dlp_CT")]
+df2_clean <- merged_df[,c("Castellani.ID", "Limo.ID", "deltaCT", "Alb_CT","Dlp_CT", "mtDNACN_adj_age_sex", "Age", "Sex")]
+df2_final <- merged_df[,c("Castellani.ID", "Limo.ID", "deltaCT", "Alb_CT","Dlp_CT", "mtDNACN_unadj", "mtDNACN_adj_age_sex", "Age", "Sex")]
+
+write.csv(df2, "Buccal_qPCR_Results_20251212_minimal.csv", quote=F)
+write.csv(df2_clean, "Buccal_qPCR_Results_20251212_CLEAN_minimal.csv", quote=F)
+
+write.csv(df2_final, "Buccal_qPCR_Results_20251212_outliersremoved_minimal_final.csv", quote=F)
+
+forPlot <- df2[order(df2$Sample),]
+forPlot_clean <- df2_clean[order(df2_clean$Sample),]
+
+data <- forPlot
+for (i in 1:nrow(data)){
+  data$type[i]=data$Sample[i]
+}
+data_clean <- forPlot_clean
+for (i in 1:nrow(data_clean)){
+  data_clean$type[i]=data_clean$Sample[i]
+}
+
+data$SampleID <- as.numeric(data$Sample)
+data <- arrange(data,SampleID)
+data$type <- factor(data$type, levels=data$SampleID)
+
+data$Dlp_CT <- as.numeric(data$Dlp_CT)
+data$Alb_CT <- as.numeric(data$Alb_CT)
+minC <- min(data$deltaCT)
+minD <- min(data$Dlp_CT)
+minA <- min(data$Alb_CT)
+
+data_clean$SampleID <- as.numeric(data_clean$Sample)
+data_clean <- arrange(data_clean,SampleID)
+data_clean$type <- factor(data_clean$type, levels=data_clean$SampleID)
+
+data_clean$Dlp_CT <- as.numeric(data_clean$Dlp_CT)
+data_clean$Alb_CT <- as.numeric(data_clean$Alb_CT)
+minC <- min(data_clean$deltaCT)
+minD <- min(data_clean$Dlp_CT)
+minA <- min(data_clean$Alb_CT)
+
+png(file = "buccal_deltaCt_20251212.png", width = 1500, height = 400)
+ggplot(data) + geom_boxplot(aes(col=type, x=type, y=deltaCT)) +  ggtitle("buccal_deltaCt_20251212") + ylab("deltaCt") + theme(legend.title=element_blank(), axis.title = element_text(face="bold")) + geom_point(aes(col=type, x=type, y=deltaCT), position=position_dodge(0.75)) +  theme(axis.text.x=element_text(angle = 45, hjust = 1), plot.margin = margin(1, 0.2, 1.5, 2, "cm"), text = element_text(size=10), axis.title.x=element_blank(), legend.title=element_blank()) + ylim(minC-0.2, minC+5.5)
+dev.off()
+
+png(file = "buccal_dlp_20251212.png", width = 1500, height = 400)
+ggplot(data) + geom_boxplot(aes(col=type, x=type, y=Dlp_CT)) +  ggtitle("buccal_dlp_20251212") + ylab("Dlp_CT") + theme(legend.title=element_blank(), axis.title = element_text(face="bold")) + geom_point(aes(col=type, x=type, y=Dlp_CT), position=position_dodge(0.75)) +  theme(axis.text.x=element_text(angle = 45, hjust = 1), plot.margin = margin(1, 0.2, 1.5, 2, "cm"), text = element_text(size=10), axis.title.x=element_blank(), legend.title=element_blank()) + ylim(minD-0.2,minD+5.5)
+dev.off()
+
+png(file = "buccal_alb_20251212.png", width = 1500, height = 400)
+ggplot(data) + geom_boxplot(aes(col=type, x=type, y=Alb_CT)) +  ggtitle("buccal_alb_20251212") + ylab("Alb_CT") + theme(legend.title=element_blank(), axis.title = element_text(face="bold")) + geom_point(aes(col=type, x=type, y=Alb_CT), position=position_dodge(0.75)) +  theme(axis.text.x=element_text(angle = 45, hjust = 1), plot.margin = margin(1, 0.2, 1.5, 2, "cm"), text = element_text(size=10), axis.title.x=element_blank(), legend.title=element_blank()) + ylim(minA-0.2, minA+5.5)
+dev.off()
+
+png(file = "buccal_deltaCt_adj_20251212_CLEAN.png", width = 1500, height = 400)
+ggplot(data_clean) + geom_boxplot(aes(col=type, x=type, y=deltaCT_adj)) +  ggtitle("buccal_deltaCt_adj_20251212_CLEAN") + ylab("deltaCt_adj") + theme(legend.title=element_blank(), axis.title = element_text(face="bold")) + geom_point(aes(col=type, x=type, y=deltaCT_adj), position=position_dodge(0.75)) +  theme(axis.text.x=element_text(angle = 45, hjust = 1), plot.margin = margin(1, 0.2, 1.5, 2, "cm"), text = element_text(size=10), axis.title.x=element_blank(), legend.title=element_blank()) + ylim(-4,4)
+dev.off()
+
+png(file = "buccal_deltaCt_20251212_CLEAN.png", width = 1500, height = 400)
+ggplot(data_clean) + geom_boxplot(aes(col=type, x=type, y=deltaCT)) +  ggtitle("buccal_deltaCt_20251212_CLEAN") + ylab("deltaCt") + theme(legend.title=element_blank(), axis.title = element_text(face="bold")) + geom_point(aes(col=type, x=type, y=deltaCT), position=position_dodge(0.75)) +  theme(axis.text.x=element_text(angle = 45, hjust = 1), plot.margin = margin(1, 0.2, 1.5, 2, "cm"), text = element_text(size=10), axis.title.x=element_blank(), legend.title=element_blank()) + ylim(minC-0.2, minC+5.5)
+dev.off()
+
+png(file = "buccal_dlp_20251212_CLEAN.png", width = 1500, height = 400)
+ggplot(data_clean) + geom_boxplot(aes(col=type, x=type, y=Dlp_CT)) +  ggtitle("buccal_dlp_20251212") + ylab("Dlp_CT") + theme(legend.title=element_blank(), axis.title = element_text(face="bold")) + geom_point(aes(col=type, x=type, y=Dlp_CT), position=position_dodge(0.75)) +  theme(axis.text.x=element_text(angle = 45, hjust = 1), plot.margin = margin(1, 0.2, 1.5, 2, "cm"), text = element_text(size=10), axis.title.x=element_blank(), legend.title=element_blank()) + ylim(minD-0.2,minD+5.5)
+dev.off()
+
+png(file = "buccal_alb_20251212_CLEAN.png", width = 1500, height = 400)
+ggplot(data_clean) + geom_boxplot(aes(col=type, x=type, y=Alb_CT)) +  ggtitle("buccal_alb_20251212") + ylab("Alb_CT") + theme(legend.title=element_blank(), axis.title = element_text(face="bold")) + geom_point(aes(col=type, x=type, y=Alb_CT), position=position_dodge(0.75)) +  theme(axis.text.x=element_text(angle = 45, hjust = 1), plot.margin = margin(1, 0.2, 1.5, 2, "cm"), text = element_text(size=10), axis.title.x=element_blank(), legend.title=element_blank()) + ylim(minA-0.2, minA+5.5)
+dev.off()
+```
+
